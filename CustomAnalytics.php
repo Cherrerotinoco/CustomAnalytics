@@ -48,7 +48,7 @@ class CustomAnalytics extends PaymentModule
         parent::__construct();
 
         $this->displayName = $this->l('Tracking de Eventos y Analítica Web');
-        $this->description = $this->l('Seguimiento de visitas y conversiones en la web.');
+        $this->description = $this->l('Seguimiento de visitas y conversiones en la web con Google Analytics 4.');
 
 
         $this->ps_versions_compliancy = array('min' => '1.7', 'max' => _PS_VERSION_);
@@ -66,51 +66,145 @@ class CustomAnalytics extends PaymentModule
             return false;
         }
 
-        Configuration::updateValue('CUSTOMANALYTICS_LIVE_MODE', false);
+        Configuration::updateValue('CUSTOMANALYTICS_MODULE', false);
 
         return parent::install() &&
             $this->registerHook('displayHeader') &&
-            $this->registerHook('displayOrderConfirmation');
+            $this->registerHook('displayOrderConfirmation') &&
+            Configuration::updateValue('CUSTOMANALYTICS_MODULE', '');
     }
 
     public function uninstall()
     {
-        Configuration::deleteByName('CUSTOMANALYTICS_LIVE_MODE');
+        Configuration::deleteByName('CUSTOMANALYTICS_MODULE');
 
         return parent::uninstall();
     }
 
+    public function getContent()
+    {
+        $output = null;
+    
+        if (Tools::isSubmit('submit'.$this->name)) {
+            $inputForm = strval(Tools::getValue('CUSTOMANALYTICS_MODULE_UA'));
+    
+            if (
+                !$inputForm ||
+                empty($inputForm) ||
+                !Validate::isGenericName($inputForm)
+            ) {
+                $output .= $this->displayError($this->l('Invalid Configuration value'));
+            } else {
+                Configuration::updateValue('CUSTOMANALYTICS_MODULE', $inputForm);
+                $output .= $this->displayConfirmation($this->l('Settings updated'));
+            }
+        }
+    
+        return $output.$this->displayForm();
+    }
+
+    public function displayForm()
+    {
+        // Get default language
+        $defaultLang = (int)Configuration::get('PS_LANG_DEFAULT');
+
+        // Init Fields form array
+        $fieldsForm[0]['form'] = [
+            'legend' => [
+                'title' => $this->l('Settings'),
+            ],
+            'input' => [
+                [
+                    'type' => 'text',
+                    'label' => $this->l('Codigo de seguimiento Analytics 4'),
+                    'name' => 'CUSTOMANALYTICS_MODULE_UA',
+                    'size' => 20,
+                    'required' => true
+                ]
+            ],
+            'submit' => [
+                'title' => $this->l('Save'),
+                'class' => 'btn btn-default pull-right'
+            ]
+        ];
+
+        $helper = new HelperForm();
+
+        // Module, token and currentIndex
+        $helper->module = $this;
+        $helper->name_controller = $this->name;
+        $helper->token = Tools::getAdminTokenLite('AdminModules');
+        $helper->currentIndex = AdminController::$currentIndex.'&configure='.$this->name;
+
+        // Language
+        $helper->default_form_language = $defaultLang;
+        $helper->allow_employee_form_lang = $defaultLang;
+
+        // Title and toolbar
+        $helper->title = $this->displayName;
+        $helper->show_toolbar = true;        // false -> remove toolbar
+        $helper->toolbar_scroll = true;      // yes - > Toolbar is always visible on the top of the screen.
+        $helper->submit_action = 'submit'.$this->name;
+        $helper->toolbar_btn = [
+            'save' => [
+                'desc' => $this->l('Save'),
+                'href' => AdminController::$currentIndex.'&configure='.$this->name.'&save'.$this->name.
+                '&token='.Tools::getAdminTokenLite('AdminModules'),
+            ],
+            'back' => [
+                'href' => AdminController::$currentIndex.'&token='.Tools::getAdminTokenLite('AdminModules'),
+                'desc' => $this->l('Back to list')
+            ]
+        ];
+
+        // Load current value
+        $helper->fields_value['CUSTOMANALYTICS_MODULE_UA'] = Tools::getValue('CUSTOMANALYTICS_MODULE_UA', Configuration::get('CUSTOMANALYTICS_MODULE'));
+
+        return $helper->generateForm($fieldsForm);
+        }
 
     /**
      * Add the CSS & JavaScript files you want to be added on the FO.
      */
-    public function hookDisplayHeader()
+    public function hookDisplayHeader($params)
     {   
-        return 
-        '
-            <script defer src="https://www.googletagmanager.com/gtag/js?id="></script>
-            <script>
-            window.dataLayer = window.dataLayer || [];
-            function gtag(){dataLayer.push(arguments);}
-            gtag("js", new Date());
+        $this->smarty->assign('codigo_seguimiento', Configuration::get('CUSTOMANALYTICS_MODULE'));
 
-            gtag("config", "");
-            </script>
-        ';
+        $this->html .= $this->display(__FILE__, 'views/front.tpl');
+        
+        return $this->html;
     }
 
 
     public function hookDisplayOrderConfirmation($params)
     {
+        // Si no hay un Código de seguimiento finalizamos la ejecución
+        if (empty(Configuration::get('CUSTOMANALYTICS_MODULE'))) {
+            return;
+        }
+
         $order = $params['order'];
+        $items = [];
+
+        foreach ($order->getProducts() as $product) {
+            $items[] = array(
+                "id" => $product['id_product'],
+                "name" => $product['product_name'],
+                "quantity" => $product['product_quantity'],
+                "price" => $product['total_price_tax_incl']
+            );
+        }
+
         if (Validate::isLoadedObject($order) && $order->getCurrentState() != (int)Configuration::get('PS_OS_ERROR')) {
             return 
             "
             <script defer type='text/javascript'>
-                gtag('event', 'conversion', {
+                gtag('event', 'purchase', {
                     'transaction_id': '".$order->reference."',
                     'value': ".$order->total_paid.",
-                    'currency': 'EUR'
+                    'currency': 'EUR',
+                    'items': ".json_encode($items).",
+                    'event_callback': console.log('Evento enviado a Analytics')
                 });
             </script>
             "
